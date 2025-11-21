@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -41,7 +42,9 @@ type requestJSON struct {
 
 var quiet bool
 var myhostname string
-var draining atomic.Bool // Flag to indicate server is draining (set when SIGTERM received)
+var draining atomic.Bool                     // Flag to indicate server is draining (set when SIGTERM received)
+var binaryPayload1MB = make([]byte, 1<<20)   // 1 MiB
+var binaryPayload10MB = make([]byte, 10<<20) // 10 MiB
 
 var requestJSONPool sync.Pool
 
@@ -217,10 +220,37 @@ func requestToJSON(ctx *fasthttp.RequestCtx) ([]byte, error) {
 }
 
 func requestHandler(ctx *fasthttp.RequestCtx) {
-	jsonData, _ := requestToJSON(ctx)
+	var (
+		responseBody []byte
+		isBinary     bool
+	)
 
-	ctx.SetContentType("application/json")
-	ctx.Response.Header.SetContentLength(len(jsonData))
+	// Optional binary payload based on header value
+	if payload := ctx.Request.Header.Peek("X-Binary-Test"); len(payload) > 0 {
+		switch b2s(payload) {
+		case "1":
+			responseBody = binaryPayload1MB
+			isBinary = true
+		case "10":
+			responseBody = binaryPayload10MB
+			isBinary = true
+		}
+	}
+
+	// Optional delay based on header value (seconds)
+	if v := ctx.Request.Header.Peek("X-Sleep-Seconds"); len(v) > 0 {
+		if n, err := strconv.Atoi(b2s(v)); err == nil && n > 0 {
+			time.Sleep(time.Duration(n) * time.Second)
+		}
+	}
+
+	if isBinary {
+		ctx.SetContentType("application/octet-stream")
+	} else {
+		responseBody, _ = requestToJSON(ctx)
+		ctx.SetContentType("application/json")
+	}
+	ctx.Response.Header.SetContentLength(len(responseBody))
 
 	// Check if server is draining (pod received SIGTERM)
 	// If draining, tell client not to reuse this connection (zero-downtime upgrade)
@@ -234,7 +264,7 @@ func requestHandler(ctx *fasthttp.RequestCtx) {
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
-	if _, err := ctx.Write(jsonData); err != nil {
+	if _, err := ctx.Write(responseBody); err != nil {
 		log.Printf("error writing response: %v", err)
 	}
 
