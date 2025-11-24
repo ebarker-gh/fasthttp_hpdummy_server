@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -142,7 +141,7 @@ func main() {
 		TCPKeepalive:    true,
 		LogAllErrors:    true,
 		ReadTimeout:     90 * time.Second,
-		WriteTimeout:    5 * time.Second,
+		WriteTimeout:    5 * time.Minute,
 		IdleTimeout:     10 * time.Second, // Close idle keep-alive connections after 10s
 		Handler:         requestHandler,
 		CloseOnShutdown: true, // Add 'Connection: close' header during shutdown
@@ -220,37 +219,19 @@ func requestToJSON(ctx *fasthttp.RequestCtx) ([]byte, error) {
 }
 
 func requestHandler(ctx *fasthttp.RequestCtx) {
-	var (
-		responseBody []byte
-		isBinary     bool
-	)
+	var responseBody []byte
 
-	// Optional binary payload based on header value
-	if payload := ctx.Request.Header.Peek("X-Binary-Test"); len(payload) > 0 {
-		switch b2s(payload) {
-		case "1":
-			responseBody = binaryPayload1MB
-			isBinary = true
-		case "10":
-			responseBody = binaryPayload10MB
-			isBinary = true
-		}
-	}
-
-	// Optional delay based on header value (seconds)
-	if v := ctx.Request.Header.Peek("X-Sleep-Seconds"); len(v) > 0 {
-		if n, err := strconv.Atoi(b2s(v)); err == nil && n > 0 {
-			time.Sleep(time.Duration(n) * time.Second)
-		}
-	}
-
-	if isBinary {
+	switch b2s(ctx.Path()) {
+	case "/test/bin/1":
+		responseBody = binaryPayload1MB
 		ctx.SetContentType("application/octet-stream")
-	} else {
+	case "/test/bin/10":
+		responseBody = binaryPayload10MB
+		ctx.SetContentType("application/octet-stream")
+	default:
 		responseBody, _ = requestToJSON(ctx)
 		ctx.SetContentType("application/json")
 	}
-	ctx.Response.Header.SetContentLength(len(responseBody))
 
 	// Check if server is draining (pod received SIGTERM)
 	// If draining, tell client not to reuse this connection (zero-downtime upgrade)
